@@ -45,6 +45,7 @@ simulator builds, EAS device builds, and TestFlight submission.
 - `shellcheck src/*.bash scripts/*.bash`
 - `bash scripts/check-workflows.bash` with a task-owned `VALIDATION_DIR`.
 - `markdownlint-cli2 AGENTS.md README.md DESIGN.md CONTRIBUTING.md SECURITY.md`
-- Suite CI tests the simulator action against a real Expo fixture on macOS.
+- Suite CI tests the simulator action and reusable workflow with a real Expo
+  fixture on macOS.
 
 ## Child DOX Index

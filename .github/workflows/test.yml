@@ -51,3 +51,11 @@ jobs:
           release-branch: ''
           expected-bundle-id: dev.example.expoiosfixture
           artifact-prefix: suite-self-test
+  workflow-integration:
+    needs: lint-test
+    uses: ./.github/workflows/ios-build.yml
+    with:
+      working-directory: tests/fixture
+      release-branch: ''
+      expected-bundle-id: dev.example.expoiosfixture
+      artifact-prefix: suite-workflow-test
