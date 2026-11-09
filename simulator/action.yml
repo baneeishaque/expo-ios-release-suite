@@ -1,0 +1,190 @@
+name: Expo iOS Simulator Build
+description: Compile an Expo iOS simulator app, retain diagnostics, and resolve EAS release eligibility.
+author: Banee Ishaque K
+branding:
+  icon: smartphone
+  color: blue
+inputs:
+  working-directory:
+    description: Caller app directory inside GITHUB_WORKSPACE.
+    default: '.'
+  target:
+    description: Manual artifact target (simulator, device, or both); compilation always runs.
+    default: simulator
+  profile:
+    description: Explicit manual EAS profile choice (device, production, or both).
+    default: ''
+  submit:
+    description: Whether manual production builds should be submitted.
+    default: 'false'
+  release-branch:
+    description: Pushes to this branch request production and submission; empty disables automatic EAS.
+    default: main
+  expected-bundle-id:
+    description: Optional expected iOS bundle ID.
+    default: ''
+  expected-project-id:
+    description: Optional expected EAS project UUID.
+    default: ''
+  expected-owner:
+    description: Optional expected Expo owner.
+    default: ''
+  node-version:
+    description: Node version for the caller app.
+    default: '22'
+  xcode-version:
+    description: Explicit Xcode version installed on the macOS runner.
+    default: '26.4.1'
+  prebuild:
+    description: Regenerate the native ios directory with expo prebuild --clean.
+    default: 'true'
+  scheme:
+    description: Optional scheme override; otherwise derive it from the container name.
+    default: ''
+  public-env:
+    description: JSON object of EXPO_PUBLIC_* strings to embed in the app; not a secret-hiding mechanism.
+    default: '{}'
+  artifact-prefix:
+    description: Unique artifact prefix when building multiple apps in one workflow.
+    default: ios
+  retention-days:
+    description: Retention for simulator artifacts and diagnostics, from 1 to 90 days.
+    default: '14'
+outputs:
+  eas:
+    description: Whether the caller event requests an EAS build.
+    value: ${{ steps.prepare.outputs.eas }}
+  profile:
+    description: Effective EAS profile selection.
+    value: ${{ steps.prepare.outputs.profile }}
+  submit:
+    description: Effective submission request.
+    value: ${{ steps.prepare.outputs.submit }}
+  artifact-url:
+    description: Uploaded simulator app artifact URL, if requested.
+    value: ${{ steps.upload.outputs.artifact-url }}
+  artifact-directory:
+    description: Task-owned diagnostics and products directory on this runner.
+    value: ${{ steps.prepare.outputs.artifact-directory }}
+runs:
+  using: composite
+  steps:
+    - name: Set Up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+    - name: Validate Request
+      id: prepare
+      shell: bash
+      env:
+        APP_DIRECTORY: ${{ inputs.working-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        ARTIFACT_PREFIX: ${{ inputs.artifact-prefix }}
+        RETENTION_DAYS: ${{ inputs.retention-days }}
+        TARGET: ${{ inputs.target }}
+        PROFILE: ${{ inputs.profile }}
+        SUBMIT: ${{ inputs.submit }}
+        RELEASE_BRANCH: ${{ inputs.release-branch }}
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+        PREBUILD: ${{ inputs.prebuild }}
+      run: node "$GITHUB_ACTION_PATH/../src/prepare.mjs" simulator
+    - name: Install App Dependencies
+      shell: bash
+      working-directory: ${{ steps.prepare.outputs.project-directory }}
+      run: npm ci
+    - name: Verify App Identity
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        EXPECTED_BUNDLE_ID: ${{ inputs.expected-bundle-id }}
+        EXPECTED_PROJECT_ID: ${{ inputs.expected-project-id }}
+        EXPECTED_OWNER: ${{ inputs.expected-owner }}
+      run: node "$GITHUB_ACTION_PATH/../src/inspect-project.mjs"
+    - name: Verify Toolchain
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode-version }}.app/Contents/Developer
+      run: bash "$GITHUB_ACTION_PATH/../src/simulator.bash" toolchain
+    - name: Generate Native Project
+      if: inputs.prebuild == 'true'
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode-version }}.app/Contents/Developer
+      run: node "$GITHUB_ACTION_PATH/../src/run-project.mjs" npx --no-install expo prebuild --platform ios --no-install --clean
+    - name: Cache CocoaPods
+      uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: |
+          ${{ steps.prepare.outputs.project-directory }}/ios/Pods
+          ~/.cocoapods/repos
+        key: expo-pods-${{ runner.os }}-${{ runner.arch }}-${{ inputs.xcode-version }}-${{ hashFiles(format('{0}/ios/Podfile', steps.prepare.outputs.relative-directory), format('{0}/package-lock.json', steps.prepare.outputs.relative-directory)) }}
+    - name: Install Native Dependencies
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode-version }}.app/Contents/Developer
+      run: node "$GITHUB_ACTION_PATH/../src/run-project.mjs" npx pod-install ios
+    - name: Resolve Xcode Container
+      id: xcode
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        XCODE_SCHEME: ${{ inputs.scheme }}
+      run: bash "$GITHUB_ACTION_PATH/../src/simulator.bash" resolve
+    - name: Compile Simulator
+      id: build
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        DEVELOPER_DIR: /Applications/Xcode_${{ inputs.xcode-version }}.app/Contents/Developer
+        XCODE_FLAG: ${{ steps.xcode.outputs.flag }}
+        XCODE_CONTAINER: ${{ steps.xcode.outputs.container }}
+        XCODE_SCHEME: ${{ steps.xcode.outputs.scheme }}
+      run: node "$GITHUB_ACTION_PATH/../src/run-project.mjs" bash "$GITHUB_ACTION_PATH/../src/simulator.bash" build
+    - name: Package Simulator
+      if: steps.prepare.outputs.package == 'true'
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+      run: bash "$GITHUB_ACTION_PATH/../src/simulator.bash" package
+    - name: Upload Simulator
+      id: upload
+      if: steps.prepare.outputs.package == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.artifact-directory }}/ios-simulator.tar.gz
+        compression-level: 0
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: error
+    - name: Upload Diagnostics
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}-diagnostics
+        path: |
+          ${{ steps.prepare.outputs.artifact-directory }}/xcodebuild.log
+          ${{ steps.prepare.outputs.artifact-directory }}/simulator.xcresult
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ignore
+    - name: Simulator Summary
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        JOB_STATUS: ${{ job.status }}
+        BUILD_OUTCOME: ${{ steps.build.outcome }}
+        UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+      run: bash "$GITHUB_ACTION_PATH/../src/simulator.bash" summary

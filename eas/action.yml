@@ -1,0 +1,226 @@
+name: Expo iOS EAS Release
+description: Build explicit iOS profiles on EAS after simulator success, monitor them, and optionally submit to TestFlight.
+author: Banee Ishaque K
+branding:
+  icon: upload-cloud
+  color: blue
+inputs:
+  working-directory:
+    description: Caller app directory inside GITHUB_WORKSPACE.
+    default: '.'
+  simulator-result:
+    description: Pass the actual simulator job result or step outcome; must be success.
+    required: true
+  profile:
+    description: Required logical profile choice (device, production, or both).
+    required: true
+  submit:
+    description: Submit the production IPA to TestFlight.
+    default: 'false'
+  device-profile:
+    description: EAS profile name for the logical device build.
+    default: device
+  production-profile:
+    description: EAS profile name for the logical production build.
+    default: production
+  expected-bundle-id:
+    description: Required expected iOS bundle ID.
+    required: true
+  expected-project-id:
+    description: Required expected EAS project UUID.
+    required: true
+  expected-owner:
+    description: Optional expected Expo owner.
+    default: ''
+  expo-token:
+    description: Expo access token with access to this project.
+    required: true
+  asc-app-id:
+    description: Numeric App Store Connect app ID; required for submission.
+    default: ''
+  asc-key-id:
+    description: App Store Connect API key ID; required for submission.
+    default: ''
+  asc-issuer-id:
+    description: App Store Connect API issuer ID; required for submission.
+    default: ''
+  asc-key:
+    description: App Store Connect PEM private key; required for submission.
+    default: ''
+  public-env:
+    description: JSON EXPO_PUBLIC_* strings to embed in both local config and EAS build profiles.
+    default: '{}'
+  node-version:
+    description: Node version used for EAS and the app.
+    default: '22'
+  eas-version:
+    description: Explicit EAS CLI version.
+    default: '27.5.0'
+  wait-seconds:
+    description: Shared build polling budget across all profiles.
+    default: '9000'
+  poll-seconds:
+    description: EAS status polling interval.
+    default: '60'
+  artifact-prefix:
+    description: Unique artifact prefix.
+    default: ios
+  retention-days:
+    description: Retention for IPA files and diagnostics, from 1 to 90 days.
+    default: '30'
+outputs:
+  artifact-url:
+    description: Uploaded IPA artifact URL.
+    value: ${{ steps.upload.outputs.artifact-url }}
+  submitted:
+    description: True only after successful TestFlight submission.
+    value: ${{ steps.submit.outcome == 'success' }}
+  production-build-id:
+    description: Exact EAS production build UUID.
+    value: ${{ steps.build.outputs.production-build-id }}
+  production-build-number:
+    description: Build number for app-specific post-submission steps.
+    value: ${{ steps.build.outputs.production-build-number }}
+  production-app-version:
+    description: App version for the production build.
+    value: ${{ steps.build.outputs.production-app-version }}
+runs:
+  using: composite
+  steps:
+    - name: Set Up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+    - name: Validate Paid Build Request
+      id: prepare
+      shell: bash
+      env:
+        APP_DIRECTORY: ${{ inputs.working-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        ARTIFACT_PREFIX: ${{ inputs.artifact-prefix }}
+        RETENTION_DAYS: ${{ inputs.retention-days }}
+        SIMULATOR_RESULT: ${{ inputs.simulator-result }}
+        PROFILE: ${{ inputs.profile }}
+        SUBMIT: ${{ inputs.submit }}
+        EXPECTED_BUNDLE_ID: ${{ inputs.expected-bundle-id }}
+        EXPECTED_PROJECT_ID: ${{ inputs.expected-project-id }}
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+        EAS_VERSION: ${{ inputs.eas-version }}
+        WAIT_SECONDS: ${{ inputs.wait-seconds }}
+        POLL_SECONDS: ${{ inputs.poll-seconds }}
+      run: node "$GITHUB_ACTION_PATH/../src/prepare.mjs" eas
+    - name: Install App Dependencies
+      shell: bash
+      working-directory: ${{ steps.prepare.outputs.project-directory }}
+      run: npm ci
+    - name: Verify App Identity
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        EXPECTED_BUNDLE_ID: ${{ inputs.expected-bundle-id }}
+        EXPECTED_PROJECT_ID: ${{ inputs.expected-project-id }}
+        EXPECTED_OWNER: ${{ inputs.expected-owner }}
+      run: node "$GITHUB_ACTION_PATH/../src/inspect-project.mjs"
+    - name: Verify Apple App And Agreements
+      if: steps.prepare.outputs.submit == 'true'
+      shell: bash
+      env:
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        ASC_APP_ID: ${{ inputs.asc-app-id }}
+        ASC_KEY_ID: ${{ inputs.asc-key-id }}
+        ASC_ISSUER_ID: ${{ inputs.asc-issuer-id }}
+        ASC_KEY: ${{ inputs.asc-key }}
+      run: node "$GITHUB_ACTION_PATH/../src/check-apple.mjs"
+    - name: Set Up EAS
+      uses: expo/expo-github-action@5273c2136bd09c2a341fe3340d3e767ce5a13015 # v9
+      with:
+        eas-version: ${{ inputs.eas-version }}
+        packager: npm
+        token: ${{ inputs.expo-token }}
+    - name: Configure EAS Profiles
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PROFILE: ${{ inputs.profile }}
+        SUBMIT: ${{ steps.prepare.outputs.submit }}
+        DEVICE_PROFILE: ${{ inputs.device-profile }}
+        PRODUCTION_PROFILE: ${{ inputs.production-profile }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+      run: node "$GITHUB_ACTION_PATH/../src/project-config.mjs" build
+    - name: Build And Monitor Profiles
+      id: build
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PROFILES: ${{ steps.prepare.outputs.profiles }}
+        DEVICE_PROFILE: ${{ inputs.device-profile }}
+        PRODUCTION_PROFILE: ${{ inputs.production-profile }}
+        WAIT_SECONDS: ${{ inputs.wait-seconds }}
+        POLL_SECONDS: ${{ inputs.poll-seconds }}
+        PUBLIC_ENV: ${{ inputs.public-env }}
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+      run: node "$GITHUB_ACTION_PATH/../src/run-project.mjs" bash "$GITHUB_ACTION_PATH/../src/eas.bash" build
+    - name: Upload IPAs
+      id: upload
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}
+        path: ${{ steps.prepare.outputs.artifact-directory }}/app-*.ipa
+        retention-days: ${{ inputs.retention-days }}
+        compression-level: 0
+        if-no-files-found: ignore
+    - name: Configure Submission
+      if: steps.prepare.outputs.submit == 'true'
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        ASC_APP_ID: ${{ inputs.asc-app-id }}
+        ASC_KEY_ID: ${{ inputs.asc-key-id }}
+        ASC_ISSUER_ID: ${{ inputs.asc-issuer-id }}
+        ASC_KEY: ${{ inputs.asc-key }}
+      run: node "$GITHUB_ACTION_PATH/../src/project-config.mjs" submit
+    - name: Submit Production IPA
+      id: submit
+      if: steps.prepare.outputs.submit == 'true'
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        EXPO_TOKEN: ${{ inputs.expo-token }}
+      run: bash "$GITHUB_ACTION_PATH/../src/eas.bash" submit
+    - name: Restore Caller Configuration
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+      run: node "$GITHUB_ACTION_PATH/../src/project-config.mjs" restore
+    - name: Upload Diagnostics
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ steps.prepare.outputs.artifact-name }}-diagnostics
+        path: |
+          ${{ steps.prepare.outputs.artifact-directory }}/eas-*.json
+          ${{ steps.prepare.outputs.artifact-directory }}/eas-*.log
+          ${{ steps.prepare.outputs.artifact-directory }}/duration-*.txt
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: ignore
+    - name: Release Summary
+      if: always() && steps.prepare.outputs.artifact-directory != ''
+      shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ steps.prepare.outputs.project-directory }}
+        ARTIFACT_DIR: ${{ steps.prepare.outputs.artifact-directory }}
+        PROFILES: ${{ steps.prepare.outputs.profiles }}
+        JOB_STATUS: ${{ job.status }}
+        SUBMIT_OUTCOME: ${{ steps.submit.outcome }}
+      run: bash "$GITHUB_ACTION_PATH/../src/eas.bash" summary

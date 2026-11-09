@@ -1,0 +1,53 @@
+name: Test Release Suite
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lint-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check Out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set Up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install Test Dependencies
+        run: npm ci
+      - name: Validate Composite Metadata
+        run: npm run lint:actions
+      - name: Install Actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Lint Workflows
+        env:
+          VALIDATION_DIR: ${{ github.workspace }}/scratch/validation
+        run: bash scripts/check-workflows.bash
+      - name: Check Shell Scripts
+        run: shellcheck src/*.bash scripts/*.bash
+      - name: Run Offline Regression Tests
+        env:
+          TEST_ARTIFACT_DIR: ${{ github.workspace }}/scratch/tests
+        run: npm test
+  simulator-integration:
+    needs: lint-test
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Check Out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Test Simulator Composite
+        uses: ./simulator
+        with:
+          working-directory: tests/fixture
+          release-branch: ''
+          expected-bundle-id: dev.example.expoiosfixture
+          artifact-prefix: suite-self-test
